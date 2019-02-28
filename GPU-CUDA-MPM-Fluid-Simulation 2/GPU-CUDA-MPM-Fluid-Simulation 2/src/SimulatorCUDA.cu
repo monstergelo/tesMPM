@@ -474,7 +474,7 @@ __global__ void localBitonicSort(Particle* particles, Particle* particles2, int*
 	__syncthreads();
 }
 
-string histogramSort(Particle* particles, Particle* particles2, int nParticles, int *histogram, int *probe, int probeSize, bool *probecheck, int *workitem, int *count, int *prefixsum, int *splitter, int order) {
+int histogramSort(Particle* particles, Particle* particles2, int nParticles, int *histogram, int *probe, int probeSize, bool *probecheck, int *workitem, int *count, int *prefixsum, int *splitter, int order) {
 	int change = 3200;
 	bool end = false;
 	prepareProbe << <BUCKETSIZE, 512 >> > (workitem, probe, probeSize, count, splitter); cudaDeviceSynchronize();
@@ -501,7 +501,8 @@ string histogramSort(Particle* particles, Particle* particles2, int nParticles, 
 	}
 
 	if (!end) {
-		return "fail";
+		//return "fail";
+		return 0;
 	}
 
 	if (i > 0) {
@@ -514,7 +515,8 @@ string histogramSort(Particle* particles, Particle* particles2, int nParticles, 
 		//kernel: each block assign moving index
 		localBitonicSort << <BUCKETSIZE, 512 >> > (particles, particles2, workitem, prefixsum); cudaDeviceSynchronize();
 	}
-	return "wa";
+	return 1;
+	//return "wa";
 
 	//int hist[PROBESIZE];
 	//int pro[PROBESIZE];
@@ -615,6 +617,7 @@ void SimulatorCUDA::initializeHelper() {
 	cudaMalloc(&d_probecheck, sizeof(bool));
 
 	initializeProbe << <BUCKETSIZE, 512 >> > (d_workitem, d_probe, PROBESIZE, d_count, d_splitter); cudaDeviceSynchronize();
+	sout << "preparegridlite,sort,preparegrid,finalizegrid,calculateforces,resetgrid,updateparticle,resetgrid2" << endl;
 }
 
 void SimulatorCUDA::initializeGrid(int sizeX, int sizeY) {
@@ -1561,7 +1564,10 @@ __global__ void ResetGrid2(Node* grid, int gSizeXY)
 }
 
 string SimulatorCUDA::updateCUDA() {
+	
 	//initialize----------------------------------------
+	cudaEvent_t start, stop;
+	float elapsedTime;
 	dim3 dimBlockP(1024, 1, 1);
 	dim3 dimGridP((particleCount + 1023) / 1024, 1, 1);
 	dim3 dimBlockN(gSizeX, 1, 1);
@@ -1571,11 +1577,24 @@ string SimulatorCUDA::updateCUDA() {
 	Particle* mappedParticles;
 	size_t num_bytes;
 
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
 	//start updating-----------------------------------
+	clock_t begin = clock();
 	PrepareGridLite << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
-	string output = histogramSort(workarray, workarray2, particleCount, d_histogram, d_probe, PROBESIZE, d_probecheck, d_workitem, d_count, d_prefixsum, d_splitter, order); cudaDeviceSynchronize();
-	if (output!="fail") {
-		const clock_t begin = clock();
+	clock_t end = clock();
+	sout << float(end - begin) / CLOCKS_PER_SEC << "," ;
+	//cudaEventRecord(start);
+	
+	begin = clock();
+	int output = histogramSort(workarray, workarray2, particleCount, d_histogram, d_probe, PROBESIZE, d_probecheck, d_workitem, d_count, d_prefixsum, d_splitter, order); cudaDeviceSynchronize();
+	end = clock();
+	sout << float(end - begin) / CLOCKS_PER_SEC << ",";
+
+	begin = clock();
+	if (output!=0) {
+		//const clock_t begin = clock();
 		//ApplyNewParticleAttribute << <200, 512 >> > (workarray, workarray2, particleCount); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
 		if (workarray == d_particles) {
 			workarray = d_particles2;
@@ -1585,59 +1604,80 @@ string SimulatorCUDA::updateCUDA() {
 			workarray = d_particles;
 			workarray2 = d_particles2;
 		}
-		PrepareGrid4Sort << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
-		//PrepareGrid4 << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
-		const clock_t end = clock();
-		sout << "sort: " << float(end - begin) / CLOCKS_PER_SEC << endl;
+		//PrepareGrid4Sort << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
+		PrepareGrid4 << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
+		//const clock_t end = clock();
+		//sout << "sort: " << float(end - begin) / CLOCKS_PER_SEC << endl;
 	}
 	else {
-		const clock_t begin = clock();
+		//const clock_t begin = clock();
 		PrepareGrid4 << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
-		const clock_t end = clock();
-		sout << "normal: " << float(end - begin) / CLOCKS_PER_SEC << endl;
+		//const clock_t end = clock();
+		//sout << "normal: " << float(end - begin) / CLOCKS_PER_SEC << endl;
 	}
 	//PrepareGrid4Sort << <200, 512 >> >(d_particles, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
 	//PrepareGrid4 << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, order); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
-
-	////partikel atribut
-	//if (countdown >= 30) {
-	//	//return output;
-	//	return sout.str();
-	//	////preparegridtest << <200, 512 >> >(d_particles, d_grid, particlecount, gsizex, gsizey, gsizey_3); gpuerrchk(cudapeekatlasterror()); gpuerrchk(cudadevicesynchronize());
-
-	//	//float gr[20000];
-	//	//for (int i = 0; i < 128 * 128; i++) {
-	//	//	cudaMemcpy(&gr[i], &(d_grid[i].mass), sizeof(float), cudaMemcpyDeviceToHost);
-	//	//	cudaMemcpy(&gr[i], &(d_grid[i].particleDensity), sizeof(float), cudaMemcpyDeviceToHost);
-	//	//	cudaMemcpy(&gr[i], &(d_grid[i].u), sizeof(float), cudaMemcpyDeviceToHost);
-	//	//	cudaMemcpy(&gr[i], &(d_grid[i].v), sizeof(float), cudaMemcpyDeviceToHost);
-	//	//}
-	//	Particle *ps;
-	//	ps = (Particle*)malloc(sizeof(Particle) * particleCount);
-	//	cudaMemcpy(ps, workarray, sizeof(Particle) * particleCount, cudaMemcpyDeviceToHost);
-	//	//cudaMemcpy(gr, d_grid, sizeof(Node) * 200 * 100, cudaMemcpyDeviceToHost);
-	//	gpuErrchk(cudaDeviceSynchronize());
-
-	//	std::stringstream ss;
-	//	for (int i = 0; i < particleCount; i++) {
-	//		ss << i << ") " << ps[i].writei << "\t " << ps[i].gi << endl;
-	//		//if(gr[i]>0)		ss << i << ") " << gr[i] << "\t " << endl;
-	//	}
-	//	return ss.str();
-	//}
-
+	//cudaEventRecord(stop);
+	//cudaEventSynchronize(stop);
+	//cudaEventElapsedTime(&elapsedTime, start, stop);
+	end = clock();
+	sout << float(end - begin) / CLOCKS_PER_SEC << ",";
+	
+	//sout << elapsedTime << endl;
+	begin = clock();
 	FinalizeGrid << <200, 400 >> >(d_grid, gSizeXY);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
+	end = clock();sout << float(end - begin) / CLOCKS_PER_SEC << ",";
+
+	begin = clock();
 	CalculateForces << <200, 512 >> >(workarray, d_grid, particleCount, gSizeX, gSizeY, gSizeY_3, scale, order);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
+	end = clock(); sout << float(end - begin) / CLOCKS_PER_SEC << ",";
+
+	begin = clock();
 	ResetGrid << <200, 400 >> >(d_grid, gSizeXY);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
+	end = clock(); sout << float(end - begin) / CLOCKS_PER_SEC << ",";
 
 	cudaGraphicsMapResources(1, &cuda_vbo_resource, 0);gpuErrchk(cudaPeekAtLastError());
 	cudaGraphicsResourceGetMappedPointer((void **)&mappedParticles, &num_bytes, cuda_vbo_resource);gpuErrchk(cudaPeekAtLastError());
 
-	UpdateParticle << <200, 512 >> >(workarray, d_grid, particleCount, gSizeY_3, mappedParticles, order);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize())
-	cudaGraphicsUnmapResources(1, &cuda_vbo_resource, 0);gpuErrchk(cudaPeekAtLastError());
-	ResetGrid2 << <200, 400 >> >(d_grid, gSizeXY);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
+	begin = clock();
+	UpdateParticle << <200, 512 >> > (workarray, d_grid, particleCount, gSizeY_3, mappedParticles, order); gpuErrchk(cudaPeekAtLastError()); gpuErrchk(cudaDeviceSynchronize());
+	end = clock(); sout << float(end - begin) / CLOCKS_PER_SEC << ",";
 
+	cudaGraphicsUnmapResources(1, &cuda_vbo_resource, 0);gpuErrchk(cudaPeekAtLastError());
+	
+	begin = clock();
+	ResetGrid2 << <200, 400 >> >(d_grid, gSizeXY);gpuErrchk(cudaPeekAtLastError());gpuErrchk(cudaDeviceSynchronize());
+	end = clock(); sout << float(end - begin) / CLOCKS_PER_SEC << ",";
 	//end-----------------------------------------------
+	sout << endl;
+	//partikel atribut
+	if (countdown >= 300) {
+		//return "mamamamamaamma";
+		//return "wi";
+		//return output;
+		return sout.str();
+		////preparegridtest << <200, 512 >> >(d_particles, d_grid, particlecount, gsizex, gsizey, gsizey_3); gpuerrchk(cudapeekatlasterror()); gpuerrchk(cudadevicesynchronize());
+
+		//float gr[20000];
+		//for (int i = 0; i < 128 * 128; i++) {
+		//	cudaMemcpy(&gr[i], &(d_grid[i].mass), sizeof(float), cudaMemcpyDeviceToHost);
+		//	cudaMemcpy(&gr[i], &(d_grid[i].particleDensity), sizeof(float), cudaMemcpyDeviceToHost);
+		//	cudaMemcpy(&gr[i], &(d_grid[i].u), sizeof(float), cudaMemcpyDeviceToHost);
+		//	cudaMemcpy(&gr[i], &(d_grid[i].v), sizeof(float), cudaMemcpyDeviceToHost);
+		//}
+		//Particle *ps;
+		//ps = (Particle*)malloc(sizeof(Particle) * particleCount);
+		//cudaMemcpy(ps, workarray, sizeof(Particle) * particleCount, cudaMemcpyDeviceToHost);
+		//cudaMemcpy(gr, d_grid, sizeof(Node) * 200 * 100, cudaMemcpyDeviceToHost);
+		//gpuErrchk(cudaDeviceSynchronize());
+
+		//std::stringstream ss;
+		//for (int i = 0; i < particleCount; i++) {
+		//	ss << i << ") " << ps[i].writei << "\t " << ps[i].gi << endl;
+		//if(gr[i]>0)		ss << i << ") " << gr[i] << "\t " << endl;
+		//}
+		//return ss.str();
+	}
 	countdown++;
 	return "wa";
 	//return output;
